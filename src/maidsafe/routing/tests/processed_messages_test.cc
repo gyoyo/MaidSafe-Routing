@@ -46,6 +46,42 @@ TEST(ProcessedMessagesTest, BEH_AddRemove) {
   EXPECT_EQ(std::get<0>(element), std::get<0>(processed_messages.history_.at(0)));
 }
 
+
+TEST(ProcessedMessagesTest, BEH_Comparison2) {
+  std::vector<std::pair<NodeId, int32_t>> vector;
+  NodeId node_id;
+  uint32_t random;
+  for (auto index(0); index < 200; ++index) {
+    std::cout << "." << std::flush;
+    for (auto in(0); in < 100; ++in) {
+      random = RandomUint32();
+      node_id = NodeId(NodeId::kRandomId);
+      if (std::find_if(vector.begin(),
+                       vector.end(),
+                       [&](const std::pair<NodeId, int32_t>& pair) {
+                         return ((pair.first == node_id) && (pair.second));
+                       }) == vector.end()) {
+        vector.push_back(std::make_pair(node_id, random));
+        if (vector.size() > 1000)
+          vector.erase(vector.begin(), vector.begin() + 1);
+      }
+    }
+    Sleep(boost::posix_time::milliseconds(500));
+  }
+}
+
+TEST(ProcessedMessagesTest, BEH_Comparison) {
+  ProcessedMessages processed_messages;
+  for (auto index(0); index < 200; ++index) {
+      std::cout << "." << std::flush;
+    for (auto in(0); in < 100; ++in) {
+      processed_messages.Add((NodeId(NodeId::kRandomId)), RandomUint32());
+    }
+    Sleep(boost::posix_time::milliseconds(500));
+  }
+}
+
+
 }  // namespace test
 
 }  // namespace routing
