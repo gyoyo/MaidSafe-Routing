@@ -62,6 +62,9 @@ class Network {
 
   void IdealUpdateAccounts(RTNode& new_node);
   void IdealRemoveAccount(const NodeId& account);
+  size_t CheckIfAccountHoldersAreConnected(const NodeId& account);
+  size_t CheckGroupMatrixReliablity();
+  size_t CheckGroupMatrixReliablityForRandomAccounts();
 
   std::fstream out_file;
   std::vector<RTNode> nodes_;
@@ -111,14 +114,14 @@ void Network::UpdateNetwork(RTNode& new_node) {
     NodeId node_id(nodes_[index].node_id);
     std::sort(nodes_[index].close_nodes.begin(),
               nodes_[index].close_nodes.end(),
-              [node_id](const RTNode& lhs, const RTNode& rhs) {
-                return NodeId::CloserToTarget(lhs.node_id,
-                                              rhs.node_id,
-                                              node_id);
+              [node_id](const NodeId& lhs, const NodeId& rhs) {
+                return NodeId::CloserToTarget(lhs, rhs, node_id);
               });
     if (NodeId::CloserToTarget(new_node.node_id,
                                nodes_[index].close_nodes[7],
                                nodes_[index].node_id)) {
+      LOG(kVerbose) << DebugId(nodes_[index].node_id) << " network added "
+                    << DebugId(new_node.node_id);
       new_node.close_nodes.push_back(nodes_[index].node_id);
       nodes_[index].close_nodes.push_back(new_node.node_id);
     }
@@ -316,8 +319,6 @@ void Network::IdealRemoveAccount(const NodeId& account) {
 }
 
 
-
-
 void Network::RemoveAccount(const RTNode& node, const NodeId& account) {
   auto holder(std::find_if(nodes_.begin(),
                            nodes_.end(),
@@ -389,12 +390,13 @@ std::vector<NodeId> Network::GetMatrix(const NodeId& node_id) {
     }
   }
 
-//  return_nodes.erase(std::remove(return_nodes.begin(), return_nodes.end(), node_id), return_nodes.end());
   return return_nodes;
 }
 
 
 bool Network::Validate() {
+  size_t max_holers(0), extra_holers(0), max_disconnected_holders(0), disconnected_holders(0),
+      total_disconnected_holders(0);
   for (auto& account : accounts_) {
     size_t count(std::count_if(nodes_.begin(),
                                nodes_.end(),
@@ -403,13 +405,19 @@ bool Network::Validate() {
                                                   node.accounts.end(),
                                                   account) != node.accounts.end();
                   }));
-    LOG(kInfo) << "Account " << DebugId(account) << " # of holders: " << count;
-    std::sort(nodes_.begin(),
-              nodes_.end(),
-              [account](const RTNode& lhs, const RTNode& rhs) {
-                return NodeId::CloserToTarget(lhs.node_id, rhs.node_id, account);
-              });
+    std::partial_sort(nodes_.begin(),
+                      nodes_.begin() + count,
+                      nodes_.end(),
+                      [account](const RTNode& lhs, const RTNode& rhs) {
+                        return NodeId::CloserToTarget(lhs.node_id, rhs.node_id, account);
+                      });
+    disconnected_holders = CheckIfAccountHoldersAreConnected(account);
+    max_disconnected_holders = std::max(max_disconnected_holders, disconnected_holders);
+    total_disconnected_holders += disconnected_holders;
     if (count >= 5) {
+      extra_holers++;
+      max_holers = std::max(max_holers, count);
+      LOG(kInfo) << "Account " << DebugId(account) << " # of holders: " << count;
       for (size_t index(4); index < count; ++index)
         LOG(kInfo) << DebugId(nodes_.at(index).node_id) <<  " Wrong holder of : " << DebugId(account);
     }
@@ -419,6 +427,10 @@ bool Network::Validate() {
                                      << " does not have " << DebugId(account);
     }
   }
+  LOG(kInfo) << "# of account hold by more than 4 holders " << extra_holers;
+  LOG(kInfo) << "Maximum holders for an account is: " << max_holers;
+  LOG(kInfo) << "# of disconnected holders " << total_disconnected_holders;
+  LOG(kInfo) << "Maximum # of disconnected holders " << max_disconnected_holders;
   ValidateRoutingTable();
   return true;
 }
@@ -435,17 +447,17 @@ void Network::ValidateRoutingTable() {
                       [node] (const NodeId& lhs, const NodeId& rhs) {
                         return NodeId::CloserToTarget(lhs, rhs, node.node_id);
                       });
-    for (size_t index(0); index < 9; ++index) {
-      LOG(kInfo) << DebugId(node_ids[index]) << " network provided RT of " << DebugId(node.node_id);
-    }
+//    for (size_t index(0); index < 9; ++index) {
+//      LOG(kInfo) << DebugId(node_ids[index]) << " network provided RT of " << DebugId(node.node_id);
+//    }
     std::sort(node.close_nodes.begin(),
               node.close_nodes.end(),
               [node] (const NodeId& lhs, const NodeId& rhs) {
                 return NodeId::CloserToTarget(lhs, rhs, node.node_id);
               });
 
-    for (auto& element : node.close_nodes)
-      LOG(kInfo) << DebugId(element) << " nodee provided RT of " << DebugId(node.node_id);
+//    for (auto& element : node.close_nodes)
+//      LOG(kInfo) << DebugId(element) << " nodee provided RT of " << DebugId(node.node_id);
 
     for (size_t index(1); index < 8; ++index)  {
       EXPECT_NE(std::find(node.close_nodes.begin(),
@@ -459,14 +471,18 @@ void Network::ValidateRoutingTable() {
 
 
 void Network::PrintNetworkInfo() {
-  size_t max_close_nodes_size(0), min_close_nodes_size(6400), max_accounts_size(0);
+  size_t max_close_nodes_size(0), min_close_nodes_size(6400), max_accounts_size(0),
+      min_matrix_size(100), max_matrix_size(0), avg_matrix_size(0);
   std::vector<NodeId> matrix;
   std::vector<RTNode> rt_nodes(nodes_);
   for (auto& node : rt_nodes) {
     matrix = GetMatrix(node.node_id);
     LOG(kInfo) << "Size of matrix for: " << DebugId(node.node_id) << " is " << matrix.size();
-    for (auto& element : matrix)
-      LOG(kInfo) << "Element in matrix: " << DebugId(element);
+    min_matrix_size = std::min(min_matrix_size, matrix.size());
+    max_matrix_size = std::max(max_matrix_size, matrix.size());
+    avg_matrix_size += matrix.size();
+//    for (auto& element : matrix)
+//      LOG(kInfo) << "Element in matrix: " << DebugId(element);
     LOG(kInfo) <<  DebugId(node.node_id)
                 << ", closests: " << node.close_nodes.size()
                 << ", accounts: " << node.accounts.size();
@@ -477,11 +493,91 @@ void Network::PrintNetworkInfo() {
   LOG(kInfo) <<  "Maximum close nodes size: " <<  max_close_nodes_size;
   LOG(kInfo) <<  "Minimum close nodes size: " <<  min_close_nodes_size;
   LOG(kInfo) <<  "Maximum account size: " <<  max_accounts_size;
+  LOG(kInfo) <<  "Maximum matrix size: " <<  max_matrix_size;
+  LOG(kInfo) <<  "Minimum matrix size: " <<  min_matrix_size;
+  LOG(kInfo) <<  "Average matrix size: " <<  avg_matrix_size / nodes_.size();
+  LOG(kInfo) <<  "Number of times matrix missing required holders for existing accounts "
+             << CheckGroupMatrixReliablity();
+  LOG(kInfo) <<  "Number of times matrix missing required holders for random accounts "
+             << CheckGroupMatrixReliablityForRandomAccounts();
 }
+
+size_t Network::CheckGroupMatrixReliablity() {
+  size_t little_matrix(0);
+  std::vector<NodeId> matrix;
+  for (auto& account : accounts_) {
+    std::partial_sort(nodes_.begin(),
+                      nodes_.begin() + 5,
+                      nodes_.end(),
+                     [account] (const RTNode& lhs, const RTNode& rhs) {
+                       return NodeId::CloserToTarget(lhs.node_id, rhs.node_id, account);
+                     });
+    matrix = GetMatrix(nodes_[0].node_id);
+    for (size_t index(1); index < 4; ++index) {
+      if (std::find(matrix.begin(),
+                    matrix.end(),
+                    nodes_[index].node_id) == matrix.end()) {
+        LOG(kInfo) << "Matrix of " << DebugId(nodes_[0].node_id) << " does not have "
+                   << DebugId(nodes_[index].node_id) << " as a holder of account "
+                   << DebugId(account);
+        little_matrix++;
+      }
+    }
+  }
+  return little_matrix;
+}
+
+size_t Network::CheckGroupMatrixReliablityForRandomAccounts() {
+  size_t little_matrix(0), iteration(0);
+  std::vector<NodeId> matrix;
+  NodeId random_account;
+  do {
+    random_account = NodeId(NodeId::kRandomId);
+    std::partial_sort(nodes_.begin(),
+                      nodes_.begin() + 5,
+                      nodes_.end(),
+                      [random_account] (const RTNode& lhs, const RTNode& rhs) {
+                        return NodeId::CloserToTarget(lhs.node_id, rhs.node_id, random_account);
+                      });
+    matrix = GetMatrix(nodes_[0].node_id);
+    for (size_t index(1); index < 4; ++index) {
+      if (std::find(matrix.begin(),
+                    matrix.end(),
+                    nodes_[index].node_id) == matrix.end()) {
+        LOG(kInfo) << "Matrix of " << DebugId(nodes_[0].node_id) << " does not have "
+                   << DebugId(nodes_[index].node_id) << " as a holder of account "
+                   << DebugId(random_account);
+        little_matrix++;
+      }
+    }
+  } while (iteration++ < 2000);
+  return little_matrix;
+}
+
+
+size_t Network::CheckIfAccountHoldersAreConnected(const NodeId& account) {
+  size_t disconnected_holders(0);
+  for (size_t i(0); i < 4; ++i) {
+    for (size_t j(i + 1); j < 4; ++j) {
+      if (i == j)
+        continue;
+      if (std::find(nodes_[i].close_nodes.begin(),
+                    nodes_[i].close_nodes.end(),
+                    nodes_[j].node_id) == nodes_[i].close_nodes.end()) {
+        LOG(kInfo) << DebugId(nodes_[i].node_id) << " and " << DebugId(nodes_[j].node_id)
+                   << " are holders of " << DebugId(account) << " but they are not connected";
+        ++disconnected_holders;
+
+      }
+    }
+  }
+  return disconnected_holders;
+}
+
 
 TEST(RoutingTableTest, BEH_RT) {
   Network network;
-  for (auto i(0); i != 20; ++i) {
+  for (auto i(0); i != 5000; ++i) {
     network.Add(NodeId(NodeId::kRandomId));
     if (i % 5 == 0)
       network.AddAccount(NodeId(NodeId::kRandomId));
